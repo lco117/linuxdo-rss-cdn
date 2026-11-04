@@ -1,3 +1,5 @@
+import puppeteer from "@cloudflare/puppeteer";
+
 import {
   extractTopicId,
   LINUXDO_ORIGIN,
@@ -47,14 +49,19 @@ function looksLikeRssXml(value) {
   return /^(?:<\?xml\b[^>]*>\s*)?<(?:rss|feed)\b/i.test(text);
 }
 
-function attemptRecord(source, targetUrl, response, body, error) {
+function attemptData(source, targetUrl, options = {}) {
+  const body = options.body || "";
   return {
     source,
     url: targetUrl,
-    ok: Boolean(response?.ok && looksLikeRssXml(body)),
-    status: response?.status ?? null,
-    contentType: response?.headers.get("content-type") || "",
-    error: error ? (error instanceof Error ? error.message : String(error)) : "",
+    ok: looksLikeRssXml(body),
+    status: options.status ?? null,
+    contentType: options.contentType || "",
+    error: options.error
+      ? options.error instanceof Error
+        ? options.error.message
+        : String(options.error)
+      : "",
     preview: textExcerpt(body),
   };
 }
@@ -67,7 +74,7 @@ async function requestRss(source, targetUrl, options) {
     return {
       response: null,
       body: "",
-      attempt: attemptRecord(source, targetUrl, null, "", error),
+      attempt: attemptData(source, targetUrl, { error }),
     };
   }
 
@@ -75,11 +82,99 @@ async function requestRss(source, targetUrl, options) {
   return {
     response,
     body,
-    attempt: attemptRecord(source, targetUrl, response, body),
+    attempt: attemptData(source, targetUrl, {
+      status: response.status,
+      contentType: response.headers.get("content-type") || "",
+      body,
+    }),
   };
 }
 
-async function handleRssRequest(request, url) {
+async function requestBrowserRendering(env, rssUrl) {
+  const source = "browser-rendering";
+  if (!env.BROWSER) {
+    return {
+      body: "",
+      attempt: attemptData(source, rssUrl, {
+        error: "BROWSER binding is not configured",
+      }),
+    };
+  }
+
+  let browser;
+  try {
+    browser = await puppeteer.launch(env.BROWSER);
+    const page = await browser.newPage();
+
+    let status = null;
+    let contentType = "";
+    try {
+      const response = await page.goto(rssUrl, {
+        waitUntil: "domcontentloaded",
+        timeout: 45000,
+      });
+      status = response?.status() ?? null;
+      contentType = response?.headers()["content-type"] || "";
+    } catch {
+      // A Cloudflare challenge can interrupt the initial navigation. The
+      // browser may continue and navigate to the RSS document itself.
+    }
+
+    let body = "";
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      try {
+        body = await page.evaluate(() => {
+          const pre = document.querySelector("pre");
+          const preText = pre?.textContent || "";
+          if (preText.includes("<rss") || preText.includes("<feed")) {
+            return preText;
+          }
+
+          const bodyText = document.body?.innerText || "";
+          if (bodyText.includes("<rss") || bodyText.includes("<feed")) {
+            return bodyText;
+          }
+
+          return document.documentElement?.outerHTML || "";
+        });
+      } catch {
+        body = "";
+      }
+
+      body = normalizeRssXmlText(body);
+      if (looksLikeRssXml(body)) break;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+
+    return {
+      body,
+      attempt: attemptData(source, rssUrl, { status, contentType, body }),
+    };
+  } catch (error) {
+    return {
+      body: "",
+      attempt: attemptData(source, rssUrl, { error }),
+    };
+  } finally {
+    if (browser) await browser.close();
+  }
+}
+
+function rssResponse(xml, source, rssUrl) {
+  return new Response(xml, {
+    status: 200,
+    headers: {
+      "content-type": "application/rss+xml; charset=utf-8",
+      "cache-control": "public, max-age=300, s-maxage=300",
+      "x-fetch-source": source,
+      "x-linuxdo-rss-url": rssUrl,
+      "x-content-type-options": "nosniff",
+      ...CORS_HEADERS,
+    },
+  });
+}
+
+async function handleRssRequest(request, url, env) {
   const topic = url.searchParams.get("topic") || url.searchParams.get("id");
   const topicId = extractTopicId(topic);
 
@@ -106,46 +201,34 @@ async function handleRssRequest(request, url) {
     },
   });
   attempts.push(direct.attempt);
-
-  if (direct.attempt.ok) {
-    return new Response(direct.body, {
-      status: 200,
-      headers: {
-        "content-type": "application/rss+xml; charset=utf-8",
-        "cache-control": "public, max-age=300, s-maxage=300",
-        "x-fetch-source": "direct",
-        "x-linuxdo-rss-url": rssUrl,
-        "x-content-type-options": "nosniff",
-        ...CORS_HEADERS,
-      },
-    });
-  }
+  if (direct.attempt.ok) return rssResponse(direct.body, "direct", rssUrl);
 
   // Linux.do's Cloudflare challenge blocks ordinary Worker egress. Jina Reader
-  // runs a browser-side fetch and can return the raw text with this header.
+  // can return the raw text, but its shared IP pool is rate limited.
   const jinaUrl = `${JINA_READER_ORIGIN}/${rssUrl}`;
-  const fallback = await requestRss("jina-reader", jinaUrl, {
-    headers: JINA_HEADERS,
+  const jinaHeaders = { ...JINA_HEADERS };
+  if (env.JINA_API_KEY) {
+    jinaHeaders.authorization = `Bearer ${env.JINA_API_KEY}`;
+  }
+  const jina = await requestRss("jina-reader", jinaUrl, {
+    headers: jinaHeaders,
     redirect: "follow",
     cf: {
       cacheEverything: true,
       cacheTtl: 300,
     },
   });
-  attempts.push(fallback.attempt);
+  attempts.push(jina.attempt);
+  if (jina.attempt.ok) return rssResponse(jina.body, "jina-reader", rssUrl);
 
-  if (fallback.attempt.ok) {
-    return new Response(fallback.body, {
-      status: 200,
-      headers: {
-        "content-type": "application/rss+xml; charset=utf-8",
-        "cache-control": "public, max-age=300, s-maxage=300",
-        "x-fetch-source": "jina-reader",
-        "x-linuxdo-rss-url": rssUrl,
-        "x-content-type-options": "nosniff",
-        ...CORS_HEADERS,
-      },
-    });
+  // Browser Rendering executes the Cloudflare challenge in a real browser and
+  // is the reliable fallback when Jina is rate limited.
+  if (env.BROWSER) {
+    const browser = await requestBrowserRendering(env, rssUrl);
+    attempts.push(browser.attempt);
+    if (browser.attempt.ok) {
+      return rssResponse(browser.body, "browser-rendering", rssUrl);
+    }
   }
 
   const summary = attempts
@@ -178,7 +261,7 @@ export default {
       if (request.method !== "GET") {
         return jsonResponse({ error: "METHOD_NOT_ALLOWED" }, 405);
       }
-      return handleRssRequest(request, url);
+      return handleRssRequest(request, url, env);
     }
 
     if (url.pathname === "/api/health") {

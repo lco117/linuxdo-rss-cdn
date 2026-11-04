@@ -115,3 +115,12 @@ wrangler.jsonc     Workers 静态资源与入口配置
 应用不设置账号、数据库或日志收集。用户输入只用于当前 Worker 请求的 RSS 拉取；Worker 不主动持久化输入或 RSS 内容，页面解析结果只存在当前浏览器标签页中。直连失败时，RSS 地址会发送给 Jina Reader（`r.jina.ai`）作为备用抓取；如果不想使用第三方备用服务，可使用粘贴 RSS 模式。
 - Jina Reader 偶尔会在原始 XML 前再附加一个 XML 声明，导致浏览器报 `XML declaration allowed only at the start of the document`。`normalizeRssXmlText()` 会把声明收敛为一个并移动到文档最前面。
 - Jina Reader 无鉴权请求有速率限制；遇到 429 时页面会显示真实的 429 响应和重试建议，也可以改用粘贴 RSS 模式。
+
+## 可选：Browser Rendering 与 Jina API Key
+
+- Worker 配置了 `BROWSER` binding。直连和 Jina Reader 都失败时，会启动 Cloudflare Browser Rendering 在真实浏览器中打开 RSS，再取回 XML。Browser Rendering 可能产生相应用量。
+- 如果 Jina Reader 的共享 IP 经常 429，可以设置 `JINA_API_KEY` Secret 提高限额：
+
+  ```bash
+  npx wrangler secret put JINA_API_KEY
+  ```

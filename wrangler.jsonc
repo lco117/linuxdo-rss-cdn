@@ -3,6 +3,11 @@
   "name": "linuxdo-rss-cdn",
   "main": "src/index.js",
   "compatibility_date": "2025-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "browser": {
+    "binding": "BROWSER",
+    "remote": true
+  },
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
