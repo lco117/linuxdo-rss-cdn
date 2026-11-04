@@ -138,3 +138,31 @@ export function topicToRssUrl(input) {
   }
   return `${LINUXDO_ORIGIN}/t/topic/${topicId}.rss`;
 }
+
+/**
+ * Keep at most one XML declaration and move it to the very start of the
+ * document. Jina Reader can wrap an XML response with its own declaration;
+ * concatenating that wrapper with the original document produces:
+ *
+ *   <?xml ...?>
+ *   <?xml ...?><rss ...>
+ *
+ * Browsers reject that with "XML declaration allowed only at the start".
+ * This normalizer keeps the first declaration and removes the rest.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+export function normalizeRssXmlText(value) {
+  let source = String(value ?? "").replace(/^\uFEFF/, "");
+  const declarationPattern = /<\?xml\s+[^>]*\?>/gi;
+  const declarations = [...source.matchAll(declarationPattern)];
+
+  if (declarations.length > 0) {
+    const firstDeclaration = declarations[0][0];
+    source = source.replace(declarationPattern, "").trimStart();
+    return `${firstDeclaration}\n${source}`;
+  }
+
+  return source.trimStart();
+}

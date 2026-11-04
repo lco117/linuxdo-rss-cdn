@@ -2,6 +2,7 @@ import {
   LINUXDO_ORIGIN,
   decodeUploadUrls,
   extractTopicId,
+  normalizeRssXmlText,
   topicToRssUrl,
 } from "./core.js";
 
@@ -581,11 +582,11 @@ function renderFeed(xmlText, options = {}) {
     throw new Error("没有收到 RSS 内容");
   }
 
-  state.rawXml = xmlText;
+  state.rawXml = normalizeRssXmlText(xmlText);
   state.topicId = extractTopicId(options.rssUrl || elements.topicUrl.value) || "";
   state.rssUrl = options.rssUrl || "";
   state.sourceLabel = options.sourceLabel || "";
-  state.totalComments = countCommentItems(xmlText);
+  state.totalComments = countCommentItems(state.rawXml);
   document.title = "Linux.do Topic → RSS → CDN 直链";
 
   const summary = applyScope("main", { activateFeedTab: true });

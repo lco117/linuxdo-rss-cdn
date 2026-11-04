@@ -7,6 +7,7 @@ import {
   decodeBase62ToHex,
   decodeUploadUrls,
   extractTopicId,
+  normalizeRssXmlText,
   topicToRssUrl,
   uploadToCdn,
 } from "../public/core.js";
@@ -117,4 +118,14 @@ test("topicToRssUrl builds the canonical RSS endpoint", () => {
     "https://linux.do/t/topic/3109398.rss",
   );
   assert.throws(() => topicToRssUrl("https://example.com/t/topic/1"));
+});
+
+test("normalizeRssXmlText keeps one declaration at the document start", () => {
+  const duplicated =
+    '<?xml version="1.0" encoding="UTF-8" ?>\n<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel/></rss>';
+  const normalized = normalizeRssXmlText(duplicated);
+
+  assert.equal(normalized.split("<?xml").length - 1, 1);
+  assert.ok(normalized.startsWith('<?xml version="1.0" encoding="UTF-8" ?>'));
+  assert.ok(normalized.includes('<rss version="2.0">'));
 });

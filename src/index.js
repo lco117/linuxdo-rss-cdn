@@ -1,4 +1,8 @@
-import { extractTopicId, LINUXDO_ORIGIN } from "../public/core.js";
+import {
+  extractTopicId,
+  LINUXDO_ORIGIN,
+  normalizeRssXmlText,
+} from "../public/core.js";
 
 const JINA_READER_ORIGIN = "https://r.jina.ai";
 const UPSTREAM_HEADERS = {
@@ -67,7 +71,7 @@ async function requestRss(source, targetUrl, options) {
     };
   }
 
-  const body = await response.text();
+  const body = normalizeRssXmlText(await response.text());
   return {
     response,
     body,

@@ -4,6 +4,8 @@ import test from "node:test";
 import worker from "../src/index.js";
 
 const XML = `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>Test</title><description>Main post</description></channel></rss>`;
+const DUPLICATE_DECLARATION_XML = `<?xml version="1.0" encoding="UTF-8" ?>
+${XML}`;
 const ENV = { ASSETS: { fetch: () => new Response("asset") } };
 
 test("Worker falls back to Jina Reader when Linux.do returns a Cloudflare challenge", async () => {
@@ -19,7 +21,7 @@ test("Worker falls back to Jina Reader when Linux.do returns a Cloudflare challe
       });
     }
     if (String(url).startsWith("https://r.jina.ai/")) {
-      return new Response(XML, {
+      return new Response(DUPLICATE_DECLARATION_XML, {
         status: 200,
         headers: { "content-type": "text/plain" },
       });

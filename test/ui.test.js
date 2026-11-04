@@ -28,6 +28,7 @@ function makeFeed() {
     mainCdn: `${CDN_BASE_PATH}/0/1/2/${mainHash}.webp`,
     commentCdn: `${CDN_BASE_PATH}/a/b/c/${commentHash}.png`,
     xml: `<?xml version="1.0" encoding="UTF-8" ?>
+<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/">
 <channel>
   <title>测试主帖</title>
