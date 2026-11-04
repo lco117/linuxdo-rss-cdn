@@ -1,3 +1,5 @@
+const API_CACHE_VERSION = "20261105-2";
+
 import {
   LINUXDO_ORIGIN,
   decodeUploadUrls,
@@ -147,7 +149,7 @@ function absoluteUrl(value) {
 async function fetchRssThroughWorker(input) {
   const topicId = extractTopicId(input);
   if (!topicId) throw new Error("无法从输入中提取 Linux.do topic id");
-  const requestUrl = `/api/rss?topic=${encodeURIComponent(topicId)}`;
+  const requestUrl = `/api/rss?topic=${encodeURIComponent(topicId)}&v=${API_CACHE_VERSION}`;
   let response;
   try {
     response = await fetch(requestUrl, {
@@ -212,7 +214,7 @@ async function fetchRssThroughWorker(input) {
   }
 
   return {
-    xml: body,
+    xml: normalizeRssXmlText(body),
     source,
     sourceLabel:
       source === "jina-reader"
@@ -402,7 +404,8 @@ function parseItem(itemNode, index, isAtom) {
 }
 
 function parseXmlDocument(xmlText, message = "XML 解析失败，请确认内容完整") {
-  const doc = new DOMParser().parseFromString(String(xmlText || ""), "text/xml");
+  const source = normalizeRssXmlText(xmlText);
+  const doc = new DOMParser().parseFromString(source, "text/xml");
   const parserErrors = doc.getElementsByTagName("parsererror");
   if (parserErrors.length > 0 || doc.documentElement?.localName === "parsererror") {
     const parserError = [...parserErrors]
@@ -412,7 +415,7 @@ function parseXmlDocument(xmlText, message = "XML 解析失败，请确认内容
     const error = new Error(message);
     error.detail = {
       parserError: textExcerpt(parserError, 1200) || "浏览器没有提供具体 parsererror。",
-      responsePreview: textExcerpt(xmlText, 1600),
+      responsePreview: textExcerpt(source, 1600),
     };
     throw error;
   }
@@ -513,8 +516,9 @@ function applyScope(scope, options = {}) {
       ? { xml: state.rawXml, removed: 0 }
       : stripCommentItems(state.rawXml);
 
-  const decoded = decodeUploadUrls(scoped.xml);
-  const doc = parseXmlDocument(decoded.output);
+  const decoded = decodeUploadUrls(normalizeRssXmlText(scoped.xml));
+  const normalizedXml = normalizeRssXmlText(decoded.output);
+  const doc = parseXmlDocument(normalizedXml);
   const feed = parseFeed(doc, state.rssUrl, state.sourceLabel);
   const mappings = uniqueMappings(decoded.entries);
   const markdown = buildMarkdown(feed, mappings, {
@@ -528,7 +532,7 @@ function applyScope(scope, options = {}) {
   state.decoded = decoded;
   state.mappings = mappings;
   state.markdown = markdown;
-  state.feedXml = decoded.output;
+  state.feedXml = normalizedXml;
 
   const keptComments = effectiveScope === "all" ? feed.items.length : 0;
   const removedComments =
@@ -546,7 +550,7 @@ function applyScope(scope, options = {}) {
   ]
     .filter(Boolean)
     .join(" · ");
-  elements.feedOutput.value = decoded.output;
+  elements.feedOutput.value = normalizedXml;
   elements.markdownOutput.value = markdown;
   elements.imageTabCount.textContent = String(mappings.length);
   elements.feedOutputHint.textContent =

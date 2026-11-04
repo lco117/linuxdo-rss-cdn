@@ -87,6 +87,7 @@ test("default output strips comment items and can include them on demand", async
   let markdown = document.getElementById("markdownOutput").value;
 
   assert.match(feedXml, /主帖正文/);
+  assert.equal(feedXml.split("<?xml").length - 1, 1);
   assert.ok(feedXml.includes(mainCdn));
   assert.doesNotMatch(feedXml, /<item>/);
   assert.doesNotMatch(feedXml, /应该被剥离/);
@@ -158,7 +159,7 @@ test("client displays the server's real fetch error and attempt details", async 
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 
-  assert.equal(requestedUrl, "/api/rss?topic=3109398");
+  assert.equal(requestedUrl, "/api/rss?topic=3109398&v=20261105-2");
   assert.match(document.getElementById("status").textContent, /获取失败/);
   assert.match(document.getElementById("status").textContent, /HTTP 403/);
   assert.equal(document.getElementById("errorDetails").hidden, false);
