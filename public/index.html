@@ -55,6 +55,7 @@
         <div id="status" class="status" role="status" aria-live="polite">
           输入链接后点击「获取并解码」。默认输出仅保留主帖，并自动移除评论 item。
         </div>
+        <pre id="errorDetails" class="error-details" hidden></pre>
       </section>
 
       <details class="card paste-card">
@@ -218,7 +219,7 @@
       </section>
 
       <footer class="footer">
-        <span>仅请求 Linux.do 的公开 RSS，不保存用户输入或内容。</span>
+        <span>优先直连 Linux.do；被风控时使用 Jina Reader 备用抓取，不保存输入或内容。</span>
         <span>Base62 → 40 位 SHA-1 → cdn3.ldstatic.com/original/4X</span>
       </footer>
     </main>

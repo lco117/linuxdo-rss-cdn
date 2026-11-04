@@ -11,6 +11,7 @@ const elements = {
   rssPreview: document.getElementById("rssPreview"),
   fetchButton: document.getElementById("fetchButton"),
   status: document.getElementById("status"),
+  errorDetails: document.getElementById("errorDetails"),
   pasteInput: document.getElementById("pasteInput"),
   parsePasteButton: document.getElementById("parsePasteButton"),
   result: document.getElementById("result"),
@@ -50,12 +51,43 @@ const state = {
 
 let toastTimer = 0;
 
+function clearErrorDetails() {
+  if (!elements.errorDetails) return;
+  elements.errorDetails.textContent = "";
+  elements.errorDetails.hidden = true;
+}
+
+function textExcerpt(value, limit = 800) {
+  return String(value || "")
+    .trim()
+    .slice(0, limit);
+}
+
+function detailText(detail) {
+  if (!detail) return "";
+  return typeof detail === "string"
+    ? detail
+    : JSON.stringify(detail, null, 2);
+}
+
+function showError(prefix, error) {
+  const message = error?.message || String(error);
+  setStatus(`${prefix}：${message}`, "error");
+  const detail = detailText(error?.detail);
+  if (elements.errorDetails && detail) {
+    elements.errorDetails.textContent = detail;
+    elements.errorDetails.hidden = false;
+  }
+  showToast(message, true);
+}
+
 function setStatus(message, type = "info") {
   elements.status.textContent = message;
   elements.status.className = "status";
   if (type === "error") elements.status.classList.add("is-error");
   if (type === "success") elements.status.classList.add("is-success");
   if (type === "warning") elements.status.classList.add("is-warning");
+  if (type !== "error") clearErrorDetails();
 }
 
 function showToast(message, isError = false) {
@@ -112,26 +144,80 @@ function absoluteUrl(value) {
 }
 
 async function fetchRssThroughWorker(input) {
-  const response = await fetch(`/api/rss?topic=${encodeURIComponent(input)}`, {
-    headers: {
-      accept: "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8",
-    },
-    cache: "no-store",
-  });
-  const body = await response.text();
-
-  if (!response.ok) {
-    let message = `请求失败（HTTP ${response.status}）`;
-    try {
-      const payload = JSON.parse(body);
-      if (payload && payload.message) message = payload.message;
-    } catch {
-      // Keep the HTTP status fallback when the response is not JSON.
-    }
-    throw new Error(message);
+  const requestUrl = `/api/rss?topic=${encodeURIComponent(input)}`;
+  let response;
+  try {
+    response = await fetch(requestUrl, {
+      headers: {
+        accept: "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8",
+      },
+      cache: "no-store",
+    });
+  } catch (error) {
+    const wrapped = new Error(`请求 Worker 失败：${error.message || error}`);
+    wrapped.detail = { requestUrl, error: String(error) };
+    throw wrapped;
   }
 
-  return body;
+  const contentType = response.headers.get("content-type") || "";
+  const source = response.headers.get("x-fetch-source") || "";
+  const body = await response.text();
+  const trimmed = body.trimStart();
+  const lower = trimmed.slice(0, 200).toLowerCase();
+  const looksXml =
+    lower.startsWith("<?xml") ||
+    lower.startsWith("<rss") ||
+    lower.startsWith("<feed");
+
+  if (!response.ok) {
+    let payload = null;
+    try {
+      payload = JSON.parse(body);
+    } catch {
+      // Keep the raw response below when the server did not return JSON.
+    }
+
+    const message =
+      payload?.message || `Worker 请求失败（HTTP ${response.status}）`;
+    const error = new Error(message);
+    error.detail = {
+      requestUrl,
+      status: response.status,
+      contentType,
+      source,
+      responsePreview: textExcerpt(body, 1600),
+      payload,
+    };
+    throw error;
+  }
+
+  if (!looksXml) {
+    const htmlHint = lower.startsWith("<!doctype html") || lower.startsWith("<html");
+    const error = new Error(
+      htmlHint
+        ? "Worker 返回了 HTML 页面而不是 RSS XML，可能命中了错误页面或风控页。"
+        : "Worker 返回的内容不是 RSS XML。",
+    );
+    error.detail = {
+      requestUrl,
+      status: response.status,
+      contentType,
+      source,
+      responsePreview: textExcerpt(body, 1600),
+    };
+    throw error;
+  }
+
+  return {
+    xml: body,
+    source,
+    sourceLabel:
+      source === "jina-reader"
+        ? "Jina Reader 备用抓取"
+        : source === "direct"
+          ? "Worker 直连 Linux.do"
+          : "Worker 代理",
+  };
 }
 
 function uniqueMappings(entries) {
@@ -150,19 +236,20 @@ function summaryStatus(summary, prefix) {
   const unresolvedNote = summary.unresolved
     ? ` 另有 ${summary.unresolved} 个 upload:// 无法解析，已保持原样。`
     : "";
-  return `${prefix}：${scopeText}，${summary.mappingCount} 个图片直链，替换 ${summary.replacements} 处。${unresolvedNote}`;
+  const source = summary.sourceLabel ? `数据源：${summary.sourceLabel}；` : "";
+  return `${prefix}：${source}${scopeText}，${summary.mappingCount} 个图片直链，替换 ${summary.replacements} 处。${unresolvedNote}`;
 }
 
 async function handleFetch(event) {
   event.preventDefault();
+  clearErrorDetails();
   const input = elements.topicUrl.value.trim();
 
   let rssUrl;
   try {
     rssUrl = topicToRssUrl(input);
   } catch (error) {
-    setStatus(error.message, "error");
-    showToast(error.message, true);
+    showError("链接无效", error);
     return;
   }
 
@@ -170,10 +257,10 @@ async function handleFetch(event) {
   setStatus(`正在通过 Worker 获取 ${rssUrl} …`);
 
   try {
-    const xmlText = await fetchRssThroughWorker(input);
-    const summary = renderFeed(xmlText, {
+    const result = await fetchRssThroughWorker(input);
+    const summary = renderFeed(result.xml, {
       rssUrl,
-      sourceLabel: "Worker 同源代理",
+      sourceLabel: result.sourceLabel,
     });
     setStatus(
       summaryStatus(summary, "完成"),
@@ -181,17 +268,15 @@ async function handleFetch(event) {
     );
     elements.result.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
-    setStatus(
-      `错误：${error.message}。可以展开下方「直接粘贴 RSS 原文」继续处理。`,
-      "error",
-    );
-    showToast(error.message, true);
+    error.message = `${error.message}。可以展开下方「直接粘贴 RSS 原文」继续处理。`;
+    showError("获取失败", error);
   } finally {
     setLoading(false);
   }
 }
 
 function handlePaste() {
+  clearErrorDetails();
   const xmlText = elements.pasteInput.value.trim();
   if (!xmlText) {
     setStatus("粘贴框为空，请先粘贴 RSS XML。", "error");
@@ -216,8 +301,7 @@ function handlePaste() {
     );
     elements.result.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
-    setStatus(`解析失败：${error.message}`, "error");
-    showToast(error.message, true);
+    showError("解析失败", error);
   }
 }
 
@@ -316,7 +400,16 @@ function parseXmlDocument(xmlText, message = "XML 解析失败，请确认内容
   const doc = new DOMParser().parseFromString(String(xmlText || ""), "text/xml");
   const parserErrors = doc.getElementsByTagName("parsererror");
   if (parserErrors.length > 0 || doc.documentElement?.localName === "parsererror") {
-    throw new Error(message);
+    const parserError = [...parserErrors]
+      .map((node) => node.textContent || "")
+      .join(" ")
+      .trim();
+    const error = new Error(message);
+    error.detail = {
+      parserError: textExcerpt(parserError, 1200) || "浏览器没有提供具体 parsererror。",
+      responsePreview: textExcerpt(xmlText, 1600),
+    };
+    throw error;
   }
   return doc;
 }
@@ -472,6 +565,7 @@ function applyScope(scope, options = {}) {
 
   return {
     scope: effectiveScope,
+    sourceLabel: state.sourceLabel,
     itemCount: feed.items.length,
     keptComments,
     totalComments: state.totalComments,
@@ -1150,6 +1244,7 @@ function activateTab(name) {
 }
 
 function resetResult() {
+  clearErrorDetails();
   state.topicId = "";
   state.rssUrl = "";
   state.sourceLabel = "";

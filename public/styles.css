@@ -1086,3 +1086,27 @@ summary:focus-visible {
   font-size: 1.02rem;
   line-height: 1.5;
 }
+
+.error-details {
+  max-height: 320px;
+  margin: 10px 0 0;
+  padding: 12px 13px;
+  overflow: auto;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  background: #fff5f5;
+  color: #7f1d1d;
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (prefers-color-scheme: dark) {
+  .error-details {
+    border-color: #7f1d1d;
+    background: #2a0b0b;
+    color: #fecaca;
+  }
+}
