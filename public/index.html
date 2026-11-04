@@ -1,1 +1,210 @@
-Starter placeholder.
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="把 Linux.do 主题链接自动转换为 RSS，解码 upload:// 短链为 cdn3.ldstatic.com 直链，并导出 feed.xml 或 Markdown。"
+    />
+    <title>Linux.do Topic → RSS → CDN 直链</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div class="eyebrow"><span class="dot"></span> Linux.do · RSS · Base62</div>
+        <h1>Topic → RSS → CDN 直链</h1>
+        <p class="lede">
+          粘贴 Linux.do 主题链接，自动拼出 <code>.rss</code>，把正文里的
+          <code>upload://…</code> 解码成 <code>cdn3.ldstatic.com</code> 直链。
+          可直接复制或下载替换后的 <code>feed.xml</code> 与 Markdown。
+        </p>
+      </header>
+
+      <section class="card fetch-card" aria-labelledby="fetch-heading">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Step 01</p>
+            <h2 id="fetch-heading">输入主题链接</h2>
+          </div>
+          <span class="pill">Worker 同源代理</span>
+        </div>
+
+        <form id="urlForm" novalidate>
+          <label class="field-label" for="topicUrl">Linux.do topic URL</label>
+          <div class="input-row">
+            <input
+              id="topicUrl"
+              name="topicUrl"
+              type="text"
+              inputmode="url"
+              autocomplete="off"
+              spellcheck="false"
+              value="https://linux.do/t/topic/3109398"
+              placeholder="https://linux.do/t/topic/3109398"
+            />
+            <button id="fetchButton" class="button primary" type="submit">
+              <span class="button-label">获取并解码</span>
+              <span class="spinner" aria-hidden="true"></span>
+            </button>
+          </div>
+          <p id="rssPreview" class="hint">RSS: https://linux.do/t/topic/3109398.rss</p>
+        </form>
+
+        <div id="status" class="status" role="status" aria-live="polite">
+          输入链接后点击「获取并解码」。
+        </div>
+      </section>
+
+      <details class="card paste-card">
+        <summary>
+          <span>代理不可用？直接粘贴 RSS 原文</span>
+          <span class="summary-hint">离线解析</span>
+        </summary>
+        <div class="paste-body">
+          <p class="hint">
+            在浏览器打开 <code>https://linux.do/t/topic/3109398.rss</code>，全选复制后粘贴到这里。
+          </p>
+          <label class="field-label" for="pasteInput">RSS / XML 原文</label>
+          <textarea
+            id="pasteInput"
+            class="paste-input"
+            spellcheck="false"
+            placeholder="粘贴从 Linux.do 获取的 RSS XML …"
+          ></textarea>
+          <div class="button-row">
+            <button id="parsePasteButton" class="button secondary" type="button">
+              从粘贴内容解析
+            </button>
+          </div>
+        </div>
+      </details>
+
+      <section id="result" class="result" hidden aria-live="polite">
+        <div class="result-heading">
+          <div>
+            <p class="kicker">Step 02</p>
+            <h2 id="feedTitle">处理结果</h2>
+            <p id="feedMeta" class="result-meta"></p>
+          </div>
+          <button id="resetButton" class="button ghost" type="button">清空结果</button>
+        </div>
+
+        <div id="metrics" class="metrics" aria-label="转换统计"></div>
+
+        <div class="tab-shell">
+          <div class="tabs" role="tablist" aria-label="输出格式">
+            <button
+              class="tab is-active"
+              type="button"
+              role="tab"
+              aria-selected="true"
+              aria-controls="panel-feed"
+              data-tab="feed"
+            >
+              feed.xml
+            </button>
+            <button
+              class="tab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="panel-markdown"
+              data-tab="markdown"
+            >
+              Markdown
+            </button>
+            <button
+              class="tab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="panel-images"
+              data-tab="images"
+            >
+              图片直链 <span id="imageTabCount" class="tab-badge">0</span>
+            </button>
+            <button
+              class="tab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="panel-preview"
+              data-tab="preview"
+            >
+              内容预览
+            </button>
+          </div>
+
+          <section id="panel-feed" class="tab-panel is-active" role="tabpanel">
+            <div class="panel-toolbar">
+              <div>
+                <h3>替换后的 feed.xml</h3>
+                <p>只替换 upload:// 短链，其余 XML 内容保持原样。</p>
+              </div>
+              <div class="button-row">
+                <button id="copyFeedButton" class="button secondary" type="button">复制 XML</button>
+                <button id="downloadFeedButton" class="button primary" type="button">
+                  下载 feed.xml
+                </button>
+              </div>
+            </div>
+            <textarea id="feedOutput" class="code-output" readonly spellcheck="false"></textarea>
+          </section>
+
+          <section id="panel-markdown" class="tab-panel" role="tabpanel" hidden>
+            <div class="panel-toolbar">
+              <div>
+                <h3>整理后的 Markdown</h3>
+                <p>包含主题信息、每条内容、作者、时间与原帖链接。</p>
+              </div>
+              <div class="button-row">
+                <button id="copyMarkdownButton" class="button secondary" type="button">
+                  复制 Markdown
+                </button>
+                <button id="downloadMarkdownButton" class="button primary" type="button">
+                  下载 .md
+                </button>
+              </div>
+            </div>
+            <textarea id="markdownOutput" class="code-output" readonly spellcheck="false"></textarea>
+          </section>
+
+          <section id="panel-images" class="tab-panel" role="tabpanel" hidden>
+            <div class="panel-toolbar">
+              <div>
+                <h3>图片映射</h3>
+                <p>原始 upload:// 短链与解码后的 CDN 直链。</p>
+              </div>
+              <div class="button-row">
+                <button id="copyAllImagesButton" class="button secondary" type="button">
+                  复制全部直链
+                </button>
+              </div>
+            </div>
+            <div id="imageGrid" class="image-grid"></div>
+          </section>
+
+          <section id="panel-preview" class="tab-panel" role="tabpanel" hidden>
+            <div class="panel-toolbar">
+              <div>
+                <h3>内容预览</h3>
+                <p>预览已做基础安全清理；下载文件仍保留原始 XML。</p>
+              </div>
+            </div>
+            <div id="previewList" class="preview-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <span>仅请求 Linux.do 的公开 RSS，不保存用户输入或内容。</span>
+        <span>Base62 → 40 位 SHA-1 → cdn3.ldstatic.com/original/4X</span>
+      </footer>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
