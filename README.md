@@ -6,11 +6,12 @@
 
 - 输入 `https://linux.do/t/topic/3109398`，自动拼出 `https://linux.do/t/topic/3109398.rss`
 - 通过同源 Worker API 拉取 RSS，避开浏览器 CORS 限制
-- 解析 RSS 2.0 / Atom 基本结构，展示主帖与回复内容
+- 解析 RSS 2.0 / Atom 基本结构，识别频道主帖与评论 item
+- **默认剥离评论 item，只复制/下载主帖内容**；也可随时切换为「主帖 + 评论」
 - 将 `upload://<Base62>.<ext>` 解码为：
   `https://cdn3.ldstatic.com/original/4X/<h0>/<h1>/<h2>/<sha1-hex>.<ext>`
 - 一键复制 / 下载替换后的 `feed.xml`
-- 一键复制 / 下载整理后的 Markdown（包含作者、时间、原帖链接和 CDN 图片）
+- 一键复制 / 下载整理后的 Markdown（默认只含主帖；包含作者、时间、原帖链接和 CDN 图片）
 - 可查看图片短链与 CDN 直链映射，并复制单条或全部直链
 - 代理不可用时，支持直接粘贴 RSS 原文离线解析
 - 响应式布局，支持浅色 / 深色系统主题
@@ -35,7 +36,7 @@ upload://1aBcDeFg.webp
 https://cdn3.ldstatic.com/original/4X/<h[0]>/<h[1]>/<h[2]>/<40-hex>.<ext>
 ```
 
-页面只替换 `upload://` token，XML 声明、CDATA、实体和其他内容保持原样。
+页面只替换 `upload://` token。Linux.do 的 RSS 把主帖正文放在 `channel > description`，把每条评论放在 `channel > item`；因此“仅主帖”模式会移除所有顶层 `item`，但保留主帖 description。
 
 ## 本地开发
 
@@ -94,12 +95,14 @@ src/
   index.js         Cloudflare Worker 入口和 RSS 代理
 test/
   core.test.js     Base62、upload:// 替换和 topic URL 解析测试
+  ui.test.js       评论剥离、范围切换与输出生成的 DOM 级测试
 wrangler.jsonc     Workers 静态资源与入口配置
 ```
 
 ## 已知限制
 
 - 如果 Linux.do 对 Cloudflare 出口或 `linux.do` 的 RSS 路径启用登录 / 风控，Worker 代理可能收到非 RSS 内容。页面会提示，并可直接粘贴浏览器里打开的 RSS 原文继续处理。
+- “仅主帖”通过移除 RSS 顶层 `<item>` / Atom `<entry>` 实现；如果未来 Linux.do 改变 RSS 结构，需要同步调整 `public/app.js` 中的 `stripCommentItems()`。
 - CDN 路径按 Linux.do 当前使用的 `cdn3.ldstatic.com/original/4X` 规则生成；如果站点以后更换 CDN 布局，需要调整 `public/core.js` 中的 `CDN_BASE_PATH`。
 - 预览会移除脚本、内联事件、内联样式和危险 URL；下载的 `feed.xml` 保留原始 XML，仅做短链替换。
 
