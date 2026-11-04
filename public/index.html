@@ -93,6 +93,25 @@
 
         <div id="metrics" class="metrics" aria-label="转换统计"></div>
 
+        <div class="scope-bar">
+          <div class="scope-copy">
+            <span class="scope-title">输出范围</span>
+            <p id="scopeHint" class="scope-hint">
+              默认只保留主帖，自动移除 RSS item 中的评论。
+            </p>
+          </div>
+          <div class="segmented" role="radiogroup" aria-label="输出范围">
+            <label class="segment">
+              <input type="radio" name="outputScope" value="main" checked />
+              <span>仅主帖 <small>去评论</small></span>
+            </label>
+            <label class="segment">
+              <input type="radio" name="outputScope" value="all" />
+              <span>主帖 + 评论</span>
+            </label>
+          </div>
+        </div>
+
         <div class="tab-shell">
           <div class="tabs" role="tablist" aria-label="输出格式">
             <button
@@ -141,7 +160,7 @@
             <div class="panel-toolbar">
               <div>
                 <h3>替换后的 feed.xml</h3>
-                <p>只替换 upload:// 短链，其余 XML 内容保持原样。</p>
+                <p id="feedOutputHint">只替换 upload:// 短链，并默认移除评论 item。</p>
               </div>
               <div class="button-row">
                 <button id="copyFeedButton" class="button secondary" type="button">复制 XML</button>
@@ -157,7 +176,7 @@
             <div class="panel-toolbar">
               <div>
                 <h3>整理后的 Markdown</h3>
-                <p>包含主题信息、每条内容、作者、时间与原帖链接。</p>
+                <p id="markdownOutputHint">包含主题信息、主帖正文、作者、时间与原帖链接。</p>
               </div>
               <div class="button-row">
                 <button id="copyMarkdownButton" class="button secondary" type="button">
