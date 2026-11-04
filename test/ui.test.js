@@ -51,6 +51,8 @@ function makeFeed() {
   };
 }
 
+let appLoadCount = 0;
+
 async function loadApp() {
   const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
   const dom = new JSDOM(html, {
@@ -67,7 +69,8 @@ async function loadApp() {
   globalThis.Blob = dom.window.Blob;
   globalThis.URL = dom.window.URL;
 
-  await import("../public/app.js");
+  appLoadCount += 1;
+  await import(`../public/app.js?ui-test=${appLoadCount}`);
   return dom;
 }
 
@@ -121,4 +124,40 @@ test("default output strips comment items and can include them on demand", async
 
   const parsed = new dom.window.DOMParser().parseFromString(feedXml, "text/xml");
   assert.equal(parsed.getElementsByTagName("parsererror").length, 0);
+});
+
+test("client displays the server's real fetch error and attempt details", async () => {
+  const dom = await loadApp();
+  const document = dom.window.document;
+  const errorPayload = {
+    error: "UPSTREAM_FETCH_FAILED",
+    message:
+      "无法从 Linux.do 获取 RSS（direct: HTTP 403；jina-reader: HTTP 429）。请改用粘贴 RSS 模式。",
+    attempts: [
+      { source: "direct", status: 403, contentType: "text/html" },
+      { source: "jina-reader", status: 429, contentType: "application/json" },
+    ],
+  };
+
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify(errorPayload), {
+      status: 502,
+      headers: { "content-type": "application/json" },
+    });
+
+  document
+    .getElementById("urlForm")
+    .dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
+
+  for (let i = 0; i < 20; i += 1) {
+    if (document.getElementById("errorDetails").hidden === false) break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  assert.match(document.getElementById("status").textContent, /获取失败/);
+  assert.match(document.getElementById("status").textContent, /HTTP 403/);
+  assert.equal(document.getElementById("errorDetails").hidden, false);
+  assert.match(document.getElementById("errorDetails").textContent, /UPSTREAM_FETCH_FAILED/);
+  assert.match(document.getElementById("errorDetails").textContent, /jina-reader/);
+  assert.match(document.getElementById("errorDetails").textContent, /HTTP 429/);
 });
