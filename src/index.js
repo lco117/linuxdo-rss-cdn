@@ -1,5 +1,6 @@
 import { extractTopicId, LINUXDO_ORIGIN } from "../public/core.js";
 
+const JINA_READER_ORIGIN = "https://r.jina.ai";
 const UPSTREAM_HEADERS = {
   accept:
     "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.1",
@@ -7,11 +8,16 @@ const UPSTREAM_HEADERS = {
   "user-agent":
     "Mozilla/5.0 (compatible; linuxdo-rss-cdn/1.0; +https://github.com/lco117/linuxdo-rss-cdn)",
 };
+const JINA_HEADERS = {
+  accept: "text/plain",
+  "x-return-format": "text",
+};
 
 const CORS_HEADERS = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, OPTIONS",
   "access-control-allow-headers": "Accept, Content-Type",
+  "access-control-expose-headers": "x-fetch-source, x-linuxdo-rss-url",
 };
 
 function jsonResponse(body, status = 200) {
@@ -23,6 +29,50 @@ function jsonResponse(body, status = 200) {
       ...CORS_HEADERS,
     },
   });
+}
+
+function textExcerpt(value, limit = 500) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, limit);
+}
+
+function looksLikeRssXml(value) {
+  const text = String(value || "").replace(/^\uFEFF/, "").trimStart();
+  return /^(?:<\?xml\b[^>]*>\s*)?<(?:rss|feed)\b/i.test(text);
+}
+
+function attemptRecord(source, targetUrl, response, body, error) {
+  return {
+    source,
+    url: targetUrl,
+    ok: Boolean(response?.ok && looksLikeRssXml(body)),
+    status: response?.status ?? null,
+    contentType: response?.headers.get("content-type") || "",
+    error: error ? (error instanceof Error ? error.message : String(error)) : "",
+    preview: textExcerpt(body),
+  };
+}
+
+async function requestRss(source, targetUrl, options) {
+  let response;
+  try {
+    response = await fetch(targetUrl, options);
+  } catch (error) {
+    return {
+      response: null,
+      body: "",
+      attempt: attemptRecord(source, targetUrl, null, "", error),
+    };
+  }
+
+  const body = await response.text();
+  return {
+    response,
+    body,
+    attempt: attemptRecord(source, targetUrl, response, body),
+  };
 }
 
 async function handleRssRequest(request, url) {
@@ -41,62 +91,76 @@ async function handleRssRequest(request, url) {
   }
 
   const rssUrl = `${LINUXDO_ORIGIN}/t/topic/${topicId}.rss`;
-  let upstream;
-  try {
-    upstream = await fetch(rssUrl, {
-      headers: UPSTREAM_HEADERS,
-      redirect: "follow",
-      cf: {
-        cacheEverything: true,
-        cacheTtl: 300,
-      },
-    });
-  } catch (error) {
-    return jsonResponse(
-      {
-        error: "UPSTREAM_UNREACHABLE",
-        message: "无法连接 Linux.do，请稍后重试或改用粘贴 RSS 模式。",
-        detail: error instanceof Error ? error.message : String(error),
-      },
-      502,
-    );
-  }
+  const attempts = [];
 
-  if (!upstream.ok) {
-    return jsonResponse(
-      {
-        error: "UPSTREAM_HTTP_ERROR",
-        message: `Linux.do 返回 HTTP ${upstream.status}，请稍后重试或改用粘贴 RSS 模式。`,
-        upstreamStatus: upstream.status,
-        rssUrl,
-      },
-      502,
-    );
-  }
-
-  const xml = await upstream.text();
-  if (xml.length < 80 || !/<(?:rss|feed)\b/i.test(xml)) {
-    return jsonResponse(
-      {
-        error: "UPSTREAM_NOT_RSS",
-        message:
-          "Linux.do 返回的内容看起来不是 RSS（可能是登录页或风控页），请改用粘贴 RSS 模式。",
-        rssUrl,
-      },
-      502,
-    );
-  }
-
-  return new Response(xml, {
-    status: 200,
-    headers: {
-      "content-type": "application/rss+xml; charset=utf-8",
-      "cache-control": "public, max-age=300, s-maxage=300",
-      "x-linuxdo-rss-url": rssUrl,
-      "x-content-type-options": "nosniff",
-      ...CORS_HEADERS,
+  const direct = await requestRss("direct", rssUrl, {
+    headers: UPSTREAM_HEADERS,
+    redirect: "follow",
+    cf: {
+      cacheEverything: true,
+      cacheTtl: 300,
     },
   });
+  attempts.push(direct.attempt);
+
+  if (direct.attempt.ok) {
+    return new Response(direct.body, {
+      status: 200,
+      headers: {
+        "content-type": "application/rss+xml; charset=utf-8",
+        "cache-control": "public, max-age=300, s-maxage=300",
+        "x-fetch-source": "direct",
+        "x-linuxdo-rss-url": rssUrl,
+        "x-content-type-options": "nosniff",
+        ...CORS_HEADERS,
+      },
+    });
+  }
+
+  // Linux.do's Cloudflare challenge blocks ordinary Worker egress. Jina Reader
+  // runs a browser-side fetch and can return the raw text with this header.
+  const jinaUrl = `${JINA_READER_ORIGIN}/${rssUrl}`;
+  const fallback = await requestRss("jina-reader", jinaUrl, {
+    headers: JINA_HEADERS,
+    redirect: "follow",
+    cf: {
+      cacheEverything: true,
+      cacheTtl: 300,
+    },
+  });
+  attempts.push(fallback.attempt);
+
+  if (fallback.attempt.ok) {
+    return new Response(fallback.body, {
+      status: 200,
+      headers: {
+        "content-type": "application/rss+xml; charset=utf-8",
+        "cache-control": "public, max-age=300, s-maxage=300",
+        "x-fetch-source": "jina-reader",
+        "x-linuxdo-rss-url": rssUrl,
+        "x-content-type-options": "nosniff",
+        ...CORS_HEADERS,
+      },
+    });
+  }
+
+  const summary = attempts
+    .map((attempt) =>
+      attempt.status
+        ? `${attempt.source}: HTTP ${attempt.status}`
+        : `${attempt.source}: ${attempt.error || "请求失败"}`,
+    )
+    .join("；");
+
+  return jsonResponse(
+    {
+      error: "UPSTREAM_FETCH_FAILED",
+      message: `无法从 Linux.do 获取 RSS（${summary || "未知错误"}）。请改用粘贴 RSS 模式。`,
+      rssUrl,
+      attempts,
+    },
+    502,
+  );
 }
 
 export default {
