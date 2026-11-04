@@ -21,6 +21,9 @@ const elements = {
   imageTabCount: document.getElementById("imageTabCount"),
   feedOutput: document.getElementById("feedOutput"),
   markdownOutput: document.getElementById("markdownOutput"),
+  feedOutputHint: document.getElementById("feedOutputHint"),
+  markdownOutputHint: document.getElementById("markdownOutputHint"),
+  scopeHint: document.getElementById("scopeHint"),
   imageGrid: document.getElementById("imageGrid"),
   previewList: document.getElementById("previewList"),
   copyFeedButton: document.getElementById("copyFeedButton"),
@@ -40,6 +43,9 @@ const state = {
   mappings: [],
   markdown: "",
   feedXml: "",
+  rawXml: "",
+  totalComments: 0,
+  scope: "main",
 };
 
 let toastTimer = 0;
@@ -136,6 +142,17 @@ function uniqueMappings(entries) {
   return [...mapping.entries()].map(([original, cdn]) => ({ original, cdn }));
 }
 
+function summaryStatus(summary, prefix) {
+  const scopeText =
+    summary.scope === "main"
+      ? `仅主帖（已剥离 ${summary.removedComments} 条评论）`
+      : `主帖 + ${summary.keptComments} 条评论`;
+  const unresolvedNote = summary.unresolved
+    ? ` 另有 ${summary.unresolved} 个 upload:// 无法解析，已保持原样。`
+    : "";
+  return `${prefix}：${scopeText}，${summary.mappingCount} 个图片直链，替换 ${summary.replacements} 处。${unresolvedNote}`;
+}
+
 async function handleFetch(event) {
   event.preventDefault();
   const input = elements.topicUrl.value.trim();
@@ -158,13 +175,9 @@ async function handleFetch(event) {
       rssUrl,
       sourceLabel: "Worker 同源代理",
     });
-    const unresolvedNote = summary.unresolved
-      ? ` 另有 ${summary.unresolved} 个 upload:// 无法解析，已保持原样。`
-      : "";
-    const type = summary.unresolved ? "warning" : "success";
     setStatus(
-      `完成：${summary.itemCount} 条内容，${summary.mappingCount} 个图片直链，替换 ${summary.replacements} 处。${unresolvedNote}`,
-      type,
+      summaryStatus(summary, "完成"),
+      summary.unresolved ? "warning" : "success",
     );
     elements.result.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
@@ -197,11 +210,8 @@ function handlePaste() {
       rssUrl,
       sourceLabel: "粘贴内容",
     });
-    const unresolvedNote = summary.unresolved
-      ? ` 另有 ${summary.unresolved} 个 upload:// 无法解析，已保持原样。`
-      : "";
     setStatus(
-      `解析完成：${summary.itemCount} 条内容，${summary.mappingCount} 个图片直链，替换 ${summary.replacements} 处。${unresolvedNote}`,
+      summaryStatus(summary, "解析完成"),
       summary.unresolved ? "warning" : "success",
     );
     elements.result.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -302,7 +312,16 @@ function parseItem(itemNode, index, isAtom) {
   };
 }
 
-function parseFeed(doc, rssUrl, sourceLabel) {
+function parseXmlDocument(xmlText, message = "XML 解析失败，请确认内容完整") {
+  const doc = new DOMParser().parseFromString(String(xmlText || ""), "text/xml");
+  const parserErrors = doc.getElementsByTagName("parsererror");
+  if (parserErrors.length > 0 || doc.documentElement?.localName === "parsererror") {
+    throw new Error(message);
+  }
+  return doc;
+}
+
+function feedDocumentParts(doc) {
   const root = doc.documentElement;
   if (!root) throw new Error("XML 没有根节点");
 
@@ -312,28 +331,154 @@ function parseFeed(doc, rssUrl, sourceLabel) {
     throw new Error(`不是可识别的 RSS/Atom 文档（根节点：${rootName}）`);
   }
 
-  const channel = isAtom ? root : firstDirectChild(root, "channel") || root;
-  const itemNodes = isAtom
-    ? directChildren(root, "entry")
-    : directChildren(channel, "item");
+  return {
+    root,
+    isAtom,
+    container: isAtom ? root : firstDirectChild(root, "channel") || root,
+  };
+}
 
-  if (itemNodes.length === 0) {
-    throw new Error("RSS 中没有找到 item/entry 节点");
+function commentNodesFromDocument(doc) {
+  const { root, isAtom, container } = feedDocumentParts(doc);
+  return isAtom ? directChildren(root, "entry") : directChildren(container, "item");
+}
+
+function countCommentItems(xmlText) {
+  try {
+    return commentNodesFromDocument(parseXmlDocument(xmlText)).length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Remove top-level RSS <item> / Atom <entry> nodes and keep the channel-level
+ * main-post description. Serialization changes whitespace but not meaning.
+ */
+function stripCommentItems(xmlText) {
+  const doc = parseXmlDocument(xmlText);
+  const nodes = commentNodesFromDocument(doc);
+  if (nodes.length === 0) return { xml: xmlText, removed: 0 };
+
+  for (const node of nodes) node.remove();
+
+  const declaration =
+    String(xmlText).match(/^\s*<\?xml[^?]*\?>/)?.[0] ||
+    '<?xml version="1.0" encoding="UTF-8"?>';
+  const serialized = new XMLSerializer().serializeToString(doc);
+  return { xml: `${declaration}\n${serialized}`, removed: nodes.length };
+}
+
+function parseFeed(doc, rssUrl, sourceLabel) {
+  const { isAtom, container } = feedDocumentParts(doc);
+  const itemNodes = isAtom
+    ? directChildren(container, "entry")
+    : directChildren(container, "item");
+
+  const feedTitle = childText(container, "title") || "Linux.do Topic";
+  const feedLink = extractLink(container);
+  const feedDescription = extractContent(container);
+  if (!feedDescription && itemNodes.length === 0) {
+    throw new Error("RSS 中没有找到主帖正文或 item/entry 节点");
   }
 
-  const feedTitle = childText(channel, "title") || "Linux.do Topic";
-  const feedLink = extractLink(channel);
-  const feedDescription = extractContent(channel);
   const items = itemNodes.map((node, index) => parseItem(node, index, isAtom));
 
   return {
     title: feedTitle,
     link: feedLink,
     description: feedDescription,
+    updatedAt: childText(container, "lastBuildDate"),
     items,
     rssUrl,
     sourceLabel,
     generatedAt: formatGeneratedAt(),
+  };
+}
+
+function syncScopeRadios(scope) {
+  for (const input of document.querySelectorAll('input[name="outputScope"]')) {
+    input.checked = input.value === scope;
+  }
+}
+
+function scopeLabel(scope) {
+  return scope === "all" ? "主帖 + 评论" : "仅主帖";
+}
+
+function applyScope(scope, options = {}) {
+  if (!state.rawXml) throw new Error("还没有可处理的 RSS 内容");
+
+  const effectiveScope = scope === "all" ? "all" : "main";
+  const scoped =
+    effectiveScope === "all"
+      ? { xml: state.rawXml, removed: 0 }
+      : stripCommentItems(state.rawXml);
+
+  const decoded = decodeUploadUrls(scoped.xml);
+  const doc = parseXmlDocument(decoded.output);
+  const feed = parseFeed(doc, state.rssUrl, state.sourceLabel);
+  const mappings = uniqueMappings(decoded.entries);
+  const markdown = buildMarkdown(feed, mappings, {
+    scope: effectiveScope,
+    totalComments: state.totalComments,
+    removedComments: effectiveScope === "main" ? scoped.removed : 0,
+  });
+
+  state.scope = effectiveScope;
+  state.feed = feed;
+  state.decoded = decoded;
+  state.mappings = mappings;
+  state.markdown = markdown;
+  state.feedXml = decoded.output;
+
+  const keptComments = effectiveScope === "all" ? feed.items.length : 0;
+  const removedComments =
+    effectiveScope === "main" ? Math.max(state.totalComments, scoped.removed) : 0;
+  const rangeText = scopeLabel(effectiveScope);
+
+  elements.result.hidden = false;
+  elements.feedTitle.textContent = feed.title;
+  elements.feedMeta.textContent = [
+    feed.sourceLabel,
+    feed.rssUrl,
+    rangeText,
+    `保留评论 ${keptComments}/${state.totalComments}`,
+    `生成于 ${feed.generatedAt}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  elements.feedOutput.value = decoded.output;
+  elements.markdownOutput.value = markdown;
+  elements.imageTabCount.textContent = String(mappings.length);
+  elements.feedOutputHint.textContent =
+    effectiveScope === "main"
+      ? `保留主帖 description，已移除 ${removedComments} 条评论 item。`
+      : `保留主帖和 ${keptComments} 条评论 item。`;
+  elements.markdownOutputHint.textContent =
+    effectiveScope === "main"
+      ? `仅导出主帖正文；RSS 中的 ${removedComments} 条评论已剥离。`
+      : `导出主帖正文和 ${keptComments} 条评论。`;
+  elements.scopeHint.textContent = state.totalComments
+    ? `RSS 中含 ${state.totalComments} 条评论。默认仅主帖，切到右侧可一并保留。`
+    : "这个 RSS 没有评论 item，输出主帖内容。";
+  syncScopeRadios(effectiveScope);
+
+  renderMetrics(feed, decoded, mappings, effectiveScope, keptComments);
+  renderImageGrid(mappings);
+  renderPreview(feed, effectiveScope);
+  if (options.activateFeedTab) activateTab("feed");
+  if (options.scroll) elements.result.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  return {
+    scope: effectiveScope,
+    itemCount: feed.items.length,
+    keptComments,
+    totalComments: state.totalComments,
+    removedComments,
+    mappingCount: mappings.length,
+    replacements: decoded.replacements,
+    unresolved: decoded.unresolved,
   };
 }
 
@@ -342,60 +487,24 @@ function renderFeed(xmlText, options = {}) {
     throw new Error("没有收到 RSS 内容");
   }
 
-  const decoded = decodeUploadUrls(xmlText);
-  const doc = new DOMParser().parseFromString(decoded.output, "text/xml");
-  const parserErrors = doc.getElementsByTagName("parsererror");
-  if (parserErrors.length > 0 || doc.documentElement?.localName === "parsererror") {
-    throw new Error("XML 解析失败，请确认粘贴的是完整的 RSS XML");
-  }
-
-  const feed = parseFeed(doc, options.rssUrl || "", options.sourceLabel || "");
-  const mappings = uniqueMappings(decoded.entries);
-  const markdown = buildMarkdown(feed, mappings);
-
+  state.rawXml = xmlText;
   state.topicId = extractTopicId(options.rssUrl || elements.topicUrl.value) || "";
   state.rssUrl = options.rssUrl || "";
   state.sourceLabel = options.sourceLabel || "";
-  state.feed = feed;
-  state.decoded = decoded;
-  state.mappings = mappings;
-  state.markdown = markdown;
-  state.feedXml = decoded.output;
+  state.totalComments = countCommentItems(xmlText);
+  document.title = "Linux.do Topic → RSS → CDN 直链";
 
-  elements.result.hidden = false;
-  elements.feedTitle.textContent = feed.title;
-  elements.feedMeta.textContent = [
-    feed.sourceLabel,
-    feed.rssUrl,
-    `${feed.items.length} 条内容`,
-    `生成于 ${feed.generatedAt}`,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  elements.feedOutput.value = decoded.output;
-  elements.markdownOutput.value = markdown;
-  elements.imageTabCount.textContent = String(mappings.length);
-  document.title = `${feed.title} · Linux.do RSS`;
-
-  renderMetrics(feed, decoded, mappings);
-  renderImageGrid(mappings);
-  renderPreview(feed);
-  activateTab("feed");
-
-  return {
-    itemCount: feed.items.length,
-    mappingCount: mappings.length,
-    replacements: decoded.replacements,
-    unresolved: decoded.unresolved,
-  };
+  const summary = applyScope("main", { activateFeedTab: true });
+  document.title = `${state.feed.title} · Linux.do RSS`;
+  return summary;
 }
 
-function renderMetrics(feed, decoded, mappings) {
+function renderMetrics(feed, decoded, mappings, scope, keptComments) {
   const metrics = [
-    { value: feed.items.length, label: "内容条目" },
+    { value: scopeLabel(scope), label: "当前输出范围", compact: true },
+    { value: `${keptComments}/${state.totalComments}`, label: "保留评论" },
     { value: mappings.length, label: "唯一图片直链" },
     { value: decoded.replacements, label: "upload:// 替换次数" },
-    { value: decoded.unresolved, label: "未解析短链" },
   ];
 
   const nodes = metrics.map((metric) => {
@@ -403,7 +512,7 @@ function renderMetrics(feed, decoded, mappings) {
     card.className = "metric";
 
     const value = document.createElement("span");
-    value.className = "metric-value";
+    value.className = `metric-value${metric.compact ? " metric-value-text" : ""}`;
     value.textContent = String(metric.value);
 
     const label = document.createElement("span");
@@ -416,7 +525,6 @@ function renderMetrics(feed, decoded, mappings) {
 
   elements.metrics.replaceChildren(...nodes);
 }
-
 function renderImageGrid(mappings) {
   if (mappings.length === 0) {
     const empty = document.createElement("div");
@@ -579,7 +687,7 @@ function appendPreviewMeta(parent, item) {
   parent.appendChild(meta);
 }
 
-function renderPreview(feed) {
+function renderPreview(feed, scope) {
   const cards = [];
 
   if (feed.description) {
@@ -587,7 +695,7 @@ function renderPreview(feed) {
     intro.className = "preview-card";
     const header = document.createElement("header");
     const title = document.createElement("h3");
-    title.textContent = "Feed 描述";
+    title.textContent = scope === "all" ? "主帖" : "主帖（评论已剥离）";
     header.appendChild(title);
     intro.appendChild(header);
 
@@ -604,7 +712,7 @@ function renderPreview(feed) {
 
     const header = document.createElement("header");
     const title = document.createElement("h3");
-    title.textContent = item.title;
+    title.textContent = `评论 #${item.index}`;
     header.appendChild(title);
     appendPreviewMeta(header, item);
     card.appendChild(header);
@@ -925,24 +1033,31 @@ function htmlToMarkdown(html) {
   return normalizeMarkdown(renderBlocks(doc.body));
 }
 
-function buildMarkdown(feed, mappings) {
+function buildMarkdown(feed, mappings, options = {}) {
+  const scope = options.scope === "all" ? "all" : "main";
+  const removedComments = options.removedComments || 0;
   const lines = [`# ${feed.title}`];
   const meta = [];
 
   if (feed.link) meta.push(`- 原帖：${feed.link}`);
   if (feed.rssUrl) meta.push(`- RSS：${feed.rssUrl}`);
+  meta.push(
+    scope === "main"
+      ? `- 输出范围：仅主帖（已移除 ${removedComments} 条评论）`
+      : `- 输出范围：主帖 + ${feed.items.length} 条评论`,
+  );
+  if (feed.updatedAt) meta.push(`- RSS 更新时间：${feed.updatedAt}`);
   meta.push(`- 生成时间：${feed.generatedAt}`);
-  meta.push(`- 共 ${feed.items.length} 条内容，${mappings.length} 个图片直链`);
+  meta.push(`- 图片直链：${mappings.length}`);
   lines.push("", ...meta);
 
-  const firstItemContent = feed.items[0]?.content || "";
-  if (feed.description && feed.description !== firstItemContent) {
+  if (feed.description) {
     const description = htmlToMarkdown(feed.description).trim();
-    if (description) lines.push("", description);
+    if (description) lines.push("", "## 主帖", "", description);
   }
 
   for (const item of feed.items) {
-    lines.push("", "---", "", `## ${item.index}. ${item.title}`);
+    lines.push("", "---", "", `## 评论 #${item.index}`);
 
     const itemMeta = [];
     if (item.author) itemMeta.push(`- 作者：${item.author}`);
@@ -959,7 +1074,6 @@ function buildMarkdown(feed, mappings) {
 
   return normalizeMarkdown(lines.join("\n"));
 }
-
 function safeFilenamePart(value) {
   return String(value || "")
     .replace(/[<>:"/\|?*\u0000-\u001f]/g, "-")
@@ -1044,6 +1158,9 @@ function resetResult() {
   state.mappings = [];
   state.markdown = "";
   state.feedXml = "";
+  state.rawXml = "";
+  state.totalComments = 0;
+  state.scope = "main";
   elements.result.hidden = true;
   elements.feedTitle.textContent = "处理结果";
   elements.feedMeta.textContent = "";
@@ -1053,6 +1170,10 @@ function resetResult() {
   elements.previewList.replaceChildren();
   elements.metrics.replaceChildren();
   elements.imageTabCount.textContent = "0";
+  elements.feedOutputHint.textContent = "只替换 upload:// 短链，并默认移除评论 item。";
+  elements.markdownOutputHint.textContent = "包含主题信息、主帖正文、作者、时间与原帖链接。";
+  elements.scopeHint.textContent = "默认只保留主帖，自动移除 RSS item 中的评论。";
+  syncScopeRadios("main");
   document.title = "Linux.do Topic → RSS → CDN 直链";
   setStatus("已清空结果。");
   elements.topicUrl.focus();
@@ -1065,6 +1186,21 @@ elements.resetButton.addEventListener("click", resetResult);
 
 for (const tab of document.querySelectorAll("[data-tab]")) {
   tab.addEventListener("click", () => activateTab(tab.dataset.tab));
+}
+
+for (const input of document.querySelectorAll('input[name="outputScope"]')) {
+  input.addEventListener("change", () => {
+    if (!input.checked || !state.rawXml) return;
+    try {
+      const summary = applyScope(input.value);
+      setStatus(
+        summaryStatus(summary, "已切换输出范围"),
+        summary.unresolved ? "warning" : "success",
+      );
+    } catch (error) {
+      showToast(error.message, true);
+    }
+  });
 }
 
 elements.copyFeedButton.addEventListener("click", () =>
