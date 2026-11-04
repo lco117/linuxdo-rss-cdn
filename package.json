@@ -1,0 +1,19 @@
+{
+  "name": "linuxdo-rss-cdn",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Convert Linux.do topic RSS feeds and decode upload:// short URLs to cdn3.ldstatic.com direct links.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node --test",
+    "check": "npm test && wrangler deploy --dry-run --outdir .wrangler/dry-run"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "wrangler": "^4.157.0"
+  }
+}
