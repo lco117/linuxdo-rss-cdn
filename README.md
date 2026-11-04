@@ -6,6 +6,7 @@
 
 - 输入 `https://linux.do/t/topic/3109398`，自动拼出 `https://linux.do/t/topic/3109398.rss`
 - 通过同源 Worker API 拉取 RSS，避开浏览器 CORS 限制
+- Linux.do 直连被 Cloudflare 挑战拦截时，自动回退到 Jina Reader 获取原始 RSS 文本
 - 解析 RSS 2.0 / Atom 基本结构，识别频道主帖与评论 item
 - **默认剥离评论 item，只复制/下载主帖内容**；也可随时切换为「主帖 + 评论」
 - 将 `upload://<Base62>.<ext>` 解码为：
@@ -37,6 +38,8 @@ https://cdn3.ldstatic.com/original/4X/<h[0]>/<h[1]>/<h[2]>/<40-hex>.<ext>
 ```
 
 页面只替换 `upload://` token。Linux.do 的 RSS 把主帖正文放在 `channel > description`，把每条评论放在 `channel > item`；因此“仅主帖”模式会移除所有顶层 `item`，但保留主帖 description。
+
+抓取顺序：先直接请求 Linux.do RSS；如果返回 Cloudflare 挑战或非 RSS，再通过 `r.jina.ai` 的纯文本模式获取同一份 RSS。前端会显示实际使用的数据源。
 
 ## 本地开发
 
@@ -81,7 +84,7 @@ GET /api/rss?topic=https%3A%2F%2Flinux.do%2Ft%2Ftopic%2F3109398
 GET /api/health
 ```
 
-`/api/rss` 只接受 Linux.do 主题链接、RSS 链接或纯数字 topic id，并只请求固定格式的 Linux.do RSS 地址，避免成为任意 URL 代理。返回内容为原始 RSS XML，带 5 分钟缓存头。
+`/api/rss` 只接受 Linux.do 主题链接、RSS 链接或纯数字 topic id，并只请求固定格式的 Linux.do RSS 地址，避免成为任意 URL 代理。返回内容为原始 RSS XML，带 5 分钟缓存头；响应头 `x-fetch-source` 表示本次使用的抓取方式（`direct` 或 `jina-reader`）。失败时返回 JSON，内含每次抓取的 HTTP 状态、内容类型和响应片段。
 
 ## 项目结构
 
@@ -95,17 +98,18 @@ src/
   index.js         Cloudflare Worker 入口和 RSS 代理
 test/
   core.test.js     Base62、upload:// 替换和 topic URL 解析测试
-  ui.test.js       评论剥离、范围切换与输出生成的 DOM 级测试
+  ui.test.js       评论剥离、范围切换、错误展示与输出生成的 DOM 级测试
+  worker.test.js   直连失败回退与错误详情测试
 wrangler.jsonc     Workers 静态资源与入口配置
 ```
 
 ## 已知限制
 
-- 如果 Linux.do 对 Cloudflare 出口或 `linux.do` 的 RSS 路径启用登录 / 风控，Worker 代理可能收到非 RSS 内容。页面会提示，并可直接粘贴浏览器里打开的 RSS 原文继续处理。
+- Linux.do 对普通 Worker 出口启用 Cloudflare 挑战时，直连会返回 HTTP 403。项目会自动使用 Jina Reader 备用抓取；如果备用服务也不可用，页面会显示真实错误、每次请求状态和响应片段，并保留「粘贴 RSS 原文」模式。
 - “仅主帖”通过移除 RSS 顶层 `<item>` / Atom `<entry>` 实现；如果未来 Linux.do 改变 RSS 结构，需要同步调整 `public/app.js` 中的 `stripCommentItems()`。
 - CDN 路径按 Linux.do 当前使用的 `cdn3.ldstatic.com/original/4X` 规则生成；如果站点以后更换 CDN 布局，需要调整 `public/core.js` 中的 `CDN_BASE_PATH`。
 - 预览会移除脚本、内联事件、内联样式和危险 URL；下载的 `feed.xml` 保留原始 XML，仅做短链替换。
 
 ## 隐私
 
-应用不设置账号、数据库或日志收集。用户输入只用于当前 Worker 请求的 RSS 拉取；Worker 不主动持久化输入或 RSS 内容，页面解析结果只存在当前浏览器标签页中。
+应用不设置账号、数据库或日志收集。用户输入只用于当前 Worker 请求的 RSS 拉取；Worker 不主动持久化输入或 RSS 内容，页面解析结果只存在当前浏览器标签页中。直连失败时，RSS 地址会发送给 Jina Reader（`r.jina.ai`）作为备用抓取；如果不想使用第三方备用服务，可使用粘贴 RSS 模式。
