@@ -140,11 +140,14 @@ test("client displays the server's real fetch error and attempt details", async 
     ],
   };
 
-  globalThis.fetch = async () =>
-    new Response(JSON.stringify(errorPayload), {
+  let requestedUrl = "";
+  globalThis.fetch = async (url) => {
+    requestedUrl = String(url);
+    return new Response(JSON.stringify(errorPayload), {
       status: 502,
       headers: { "content-type": "application/json" },
     });
+  };
 
   document
     .getElementById("urlForm")
@@ -155,6 +158,7 @@ test("client displays the server's real fetch error and attempt details", async 
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 
+  assert.equal(requestedUrl, "/api/rss?topic=3109398");
   assert.match(document.getElementById("status").textContent, /获取失败/);
   assert.match(document.getElementById("status").textContent, /HTTP 403/);
   assert.equal(document.getElementById("errorDetails").hidden, false);

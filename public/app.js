@@ -145,7 +145,9 @@ function absoluteUrl(value) {
 }
 
 async function fetchRssThroughWorker(input) {
-  const requestUrl = `/api/rss?topic=${encodeURIComponent(input)}`;
+  const topicId = extractTopicId(input);
+  if (!topicId) throw new Error("无法从输入中提取 Linux.do topic id");
+  const requestUrl = `/api/rss?topic=${encodeURIComponent(topicId)}`;
   let response;
   try {
     response = await fetch(requestUrl, {
