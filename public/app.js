@@ -215,9 +215,11 @@ async function fetchRssThroughWorker(input) {
     sourceLabel:
       source === "jina-reader"
         ? "Jina Reader 备用抓取"
-        : source === "direct"
-          ? "Worker 直连 Linux.do"
-          : "Worker 代理",
+        : source === "browser-rendering"
+          ? "Cloudflare Browser Rendering"
+          : source === "direct"
+            ? "Worker 直连 Linux.do"
+            : "Worker 代理",
   };
 }
 
