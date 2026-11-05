@@ -10,6 +10,7 @@
 - 支持 `?topic=<Linux.do 主题 URL>` 深链：浏览器扩展右键可带当前 topic 打开并自动解析
 - 解析 RSS 2.0 / Atom 基本结构，识别频道主帖与评论 item
 - **默认剥离评论 item，并始终生成一个主帖 `<item>`**，即使原 RSS 只有一个正文；也可随时切换为「主帖 + 评论」
+- 主帖 item 的 `pubDate` 自动取 RSS 中最早 item 的发布时间（通常就是主帖 `/1` 或最早评论）；没有可用时间时回退到 `lastBuildDate`，再回退到当前时间
 - 将 `upload://<Base62>.<ext>` 解码为：
   `https://cdn3.ldstatic.com/original/4X/<h0>/<h1>/<h2>/<sha1-hex>.<ext>`
 - 一键复制 / 下载替换后的 `feed.xml`
@@ -38,7 +39,7 @@ upload://1aBcDeFg.webp
 https://cdn3.ldstatic.com/original/4X/<h[0]>/<h[1]>/<h[2]>/<40-hex>.<ext>
 ```
 
-页面只替换 `upload://` token。Linux.do 的 RSS 把主帖正文放在 `channel > description`，把每条评论放在 `channel > item`；“仅主帖”模式会移除评论 item，并把 `channel > description` 中的正文重新封装成一个标准主帖 `<item>`（title/link/guid/pubDate/description）。`channel > description` 会缩成摘要，避免正文重复。
+页面只替换 `upload://` token。Linux.do 的 RSS 把主帖正文放在 `channel > description`，把评论放在 `channel > item`（部分话题还会带一个 `/1` 主帖 item）；“仅主帖”模式会移除评论 item 和原始 `/1` item，把 `channel > description` 中的正文重新封装成一个标准主帖 `<item>`（title/link/guid/pubDate/description）。`pubDate` 使用所有原始 item 中最早的时间。`channel > description` 会缩成摘要，避免正文重复。
 
 抓取顺序：先直接请求 Linux.do RSS；如果返回 Cloudflare 挑战或非 RSS，再通过 `r.jina.ai` 的纯文本模式获取同一份 RSS。前端会显示实际使用的数据源。
 
