@@ -496,7 +496,10 @@ function createRssMainItem(doc, feed) {
   appendText("link", feed.link);
   const guid = appendText("guid", feed.link);
   if (guid) guid.setAttribute("isPermaLink", "true");
-  appendText("pubDate", feed.updatedAt || new Date().toUTCString());
+  appendText(
+    "pubDate",
+    feed.earliestItemDate || feed.updatedAt || new Date().toUTCString(),
+  );
   appendText("description", feed.description);
   return item;
 }
@@ -514,7 +517,10 @@ function createAtomMainEntry(doc, feed) {
 
   appendText("title", feed.title);
   appendText("id", feed.link);
-  appendText("updated", feed.updatedAt || new Date().toISOString());
+  appendText(
+    "updated",
+    feed.earliestItemDate || feed.updatedAt || new Date().toISOString(),
+  );
   if (feed.link) {
     const link = doc.createElementNS(ns, "link");
     link.setAttribute("href", feed.link);
@@ -542,12 +548,19 @@ function buildScopedFeedXml(decodedDoc, feed, scope, options = {}) {
   const mainNode = isAtom
     ? createAtomMainEntry(outputDoc, feed)
     : createRssMainItem(outputDoc, feed);
+  const originalMainNode = comments.find((node) =>
+    isTopicMainPostUrl(itemLinkFromNode(node), feed.link),
+  );
+  if (originalMainNode) originalMainNode.remove();
+  const remainingComments = comments.filter(
+    (node) => node !== originalMainNode && node.parentNode === container,
+  );
 
   if (scope === "main") {
-    for (const node of comments) node.remove();
+    for (const node of remainingComments) node.remove();
     container.appendChild(mainNode);
   } else {
-    container.insertBefore(mainNode, comments[0] || null);
+    container.insertBefore(mainNode, remainingComments[0] || null);
   }
 
   if (!isAtom) {
@@ -559,6 +572,38 @@ function buildScopedFeedXml(decodedDoc, feed, scope, options = {}) {
 
   return serializeFeedDocument(outputDoc, options.sourceXml || "");
 }
+function isTopicMainPostUrl(itemUrl, topicUrl) {
+  try {
+    const item = new URL(itemUrl);
+    const topic = new URL(topicUrl);
+    const stripSlashes = (value) => { let result = value; while (result.endsWith("/")) result = result.slice(0, -1); return result; };
+    const itemPath = stripSlashes(item.pathname);
+    const topicPath = stripSlashes(topic.pathname);
+    return item.origin === topic.origin && itemPath === `${topicPath}/1`;
+  } catch {
+    return false;
+  }
+}
+
+function findEarliestItemDate(items) {
+  let earliest = "";
+  let earliestTime = Infinity;
+  for (const item of items) {
+    const time = Date.parse(item.date || "");
+    if (!Number.isNaN(time) && time < earliestTime) {
+      earliestTime = time;
+      earliest = item.date;
+    }
+  }
+  return earliest;
+}
+
+function itemLinkFromNode(node) {
+  const link = firstDirectChild(node, "link");
+  if (!link) return "";
+  return link.getAttribute("href") || link.textContent.trim();
+}
+
 function parseFeed(doc, rssUrl, sourceLabel) {
   const { isAtom, container } = feedDocumentParts(doc);
   const itemNodes = isAtom
@@ -567,18 +612,26 @@ function parseFeed(doc, rssUrl, sourceLabel) {
 
   const feedTitle = childText(container, "title") || "Linux.do Topic";
   const feedLink = extractLink(container);
-  const feedDescription = extractContent(container);
-  if (!feedDescription && itemNodes.length === 0) {
+  const rawDescription = extractContent(container);
+  const allItems = itemNodes.map((node, index) => parseItem(node, index, isAtom));
+  const mainPostItem =
+    allItems.find((item) => isTopicMainPostUrl(item.link, feedLink)) || null;
+  const feedDescription = rawDescription || mainPostItem?.content || "";
+  if (!feedDescription && allItems.length === 0) {
     throw new Error("RSS 中没有找到主帖正文或 item/entry 节点");
   }
 
-  const items = itemNodes.map((node, index) => parseItem(node, index, isAtom));
+  const items = allItems
+    .filter((item) => item !== mainPostItem)
+    .map((item, index) => ({ ...item, index: index + 1 }));
 
   return {
     title: feedTitle,
     link: feedLink,
     description: feedDescription,
     updatedAt: childText(container, "lastBuildDate"),
+    earliestItemDate: findEarliestItemDate(allItems),
+    mainPostItem,
     items,
     rssUrl,
     sourceLabel,
@@ -607,6 +660,7 @@ function applyScope(scope, options = {}) {
   const decoded = decodeUploadUrls(normalizeRssXmlText(state.rawXml));
   const doc = parseXmlDocument(decoded.output);
   const fullFeed = parseFeed(doc, state.rssUrl, state.sourceLabel);
+  state.totalComments = fullFeed.items.length;
   const feed = {
     ...fullFeed,
     items: effectiveScope === "all" ? fullFeed.items : [],
@@ -1253,6 +1307,7 @@ function buildMarkdown(feed, mappings, options = {}) {
       ? `- 输出范围：仅主帖（已移除 ${removedComments} 条评论）`
       : `- 输出范围：主帖 + ${feed.items.length} 条评论`,
   );
+  if (feed.earliestItemDate) meta.push(`- 主帖时间（最早 item）：${feed.earliestItemDate}`);
   if (feed.updatedAt) meta.push(`- RSS 更新时间：${feed.updatedAt}`);
   meta.push(`- 生成时间：${feed.generatedAt}`);
   meta.push(`- 图片直链：${mappings.length}`);

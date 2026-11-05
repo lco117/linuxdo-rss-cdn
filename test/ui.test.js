@@ -40,12 +40,21 @@ function makeFeed() {
     <dc:creator><![CDATA[评论者A]]></dc:creator>
     <description><![CDATA[<p>应该被剥离的评论一</p><img src="upload://${commentShort}.png">]]></description>
     <link>https://linux.do/t/topic/3109398/172</link>
+    <pubDate>Fri, 05 Sep 2025 05:24:29 +0000</pubDate>
   </item>
   <item>
     <title>测试主帖</title>
     <dc:creator><![CDATA[评论者B]]></dc:creator>
     <description><![CDATA[<p>应该被剥离的评论二</p>]]></description>
     <link>https://linux.do/t/topic/3109398/171</link>
+    <pubDate>Fri, 05 Sep 2025 03:39:35 +0000</pubDate>
+  </item>
+  <item>
+    <title>测试主帖</title>
+    <dc:creator><![CDATA[楼主]]></dc:creator>
+    <description><![CDATA[<p>主帖正文。</p>]]></description>
+    <link>https://linux.do/t/topic/3109398/1</link>
+    <pubDate>Sat, 09 Aug 2025 03:18:40 +0000</pubDate>
   </item>
 </channel>
 </rss>`,
@@ -90,6 +99,14 @@ test("default output strips comment items and can include them on demand", async
   assert.equal(feedXml.split("<?xml").length - 1, 1);
   assert.ok(feedXml.includes(mainCdn));
   assert.equal((feedXml.match(/<item>/g) || []).length, 1);
+  const mainOnlyParsed = new dom.window.DOMParser().parseFromString(
+    feedXml,
+    "text/xml",
+  );
+  assert.equal(
+    mainOnlyParsed.getElementsByTagName("pubDate")[0].textContent,
+    "Sat, 09 Aug 2025 03:18:40 +0000",
+  );
   assert.doesNotMatch(feedXml, /应该被剥离/);
   assert.doesNotMatch(feedXml, /upload:\/\//);
   assert.ok(!feedXml.includes(commentCdn));
