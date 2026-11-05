@@ -456,20 +456,109 @@ function countCommentItems(xmlText) {
  * Remove top-level RSS <item> / Atom <entry> nodes and keep the channel-level
  * main-post description. Serialization changes whitespace but not meaning.
  */
-function stripCommentItems(xmlText) {
-  const doc = parseXmlDocument(xmlText);
-  const nodes = commentNodesFromDocument(doc);
-  if (nodes.length === 0) return { xml: xmlText, removed: 0 };
-
-  for (const node of nodes) node.remove();
-
-  const declaration =
-    String(xmlText).match(/^\s*<\?xml[^?]*\?>/)?.[0] ||
-    '<?xml version="1.0" encoding="UTF-8"?>';
-  const serialized = new XMLSerializer().serializeToString(doc);
-  return { xml: `${declaration}\n${serialized}`, removed: nodes.length };
+function xmlDeclarationFrom(xmlText) {
+  return (
+    String(xmlText || "").match(/^\s*<\?xml[^?]*\?>/)?.[0] ||
+    '<?xml version="1.0" encoding="UTF-8"?>'
+  );
 }
 
+function serializeFeedDocument(doc, sourceXml) {
+  const declaration = xmlDeclarationFrom(sourceXml);
+  return normalizeRssXmlText(
+    `${declaration}\n${new XMLSerializer().serializeToString(doc)}`,
+  );
+}
+
+function summarizeHtml(html, limit = 280) {
+  if (!html) return "";
+  try {
+    const doc = new DOMParser().parseFromString(String(html), "text/html");
+    const text = (doc.body?.textContent || "").replace(/\s+/g, " ").trim();
+    if (text.length <= limit) return text;
+    return `${text.slice(0, limit - 1)}…`;
+  } catch {
+    return "";
+  }
+}
+
+function createRssMainItem(doc, feed) {
+  const item = doc.createElement("item");
+  const appendText = (tagName, value) => {
+    if (!value) return null;
+    const element = doc.createElement(tagName);
+    element.textContent = value;
+    item.appendChild(element);
+    return element;
+  };
+
+  appendText("title", feed.title);
+  appendText("link", feed.link);
+  const guid = appendText("guid", feed.link);
+  if (guid) guid.setAttribute("isPermaLink", "true");
+  appendText("pubDate", feed.updatedAt || new Date().toUTCString());
+  appendText("description", feed.description);
+  return item;
+}
+
+function createAtomMainEntry(doc, feed) {
+  const ns = doc.documentElement.namespaceURI || "http://www.w3.org/2005/Atom";
+  const entry = doc.createElementNS(ns, "entry");
+  const appendText = (tagName, value) => {
+    if (!value) return null;
+    const element = doc.createElementNS(ns, tagName);
+    element.textContent = value;
+    entry.appendChild(element);
+    return element;
+  };
+
+  appendText("title", feed.title);
+  appendText("id", feed.link);
+  appendText("updated", feed.updatedAt || new Date().toISOString());
+  if (feed.link) {
+    const link = doc.createElementNS(ns, "link");
+    link.setAttribute("href", feed.link);
+    entry.appendChild(link);
+  }
+  const content = doc.createElementNS(ns, "content");
+  content.setAttribute("type", "html");
+  content.textContent = feed.description;
+  entry.appendChild(content);
+  return entry;
+}
+
+/**
+ * Build the feed users actually copy/download:
+ *   - always exactly one main-post <item> (or Atom <entry>)
+ *   - comments kept only in the "all" scope
+ *   - channel description shortened to a text summary
+ */
+function buildScopedFeedXml(decodedDoc, feed, scope, options = {}) {
+  const outputDoc = decodedDoc.cloneNode(true);
+  const { isAtom, container } = feedDocumentParts(outputDoc);
+  const comments = isAtom
+    ? directChildren(container, "entry")
+    : directChildren(container, "item");
+  const mainNode = isAtom
+    ? createAtomMainEntry(outputDoc, feed)
+    : createRssMainItem(outputDoc, feed);
+
+  if (scope === "main") {
+    for (const node of comments) node.remove();
+    container.appendChild(mainNode);
+  } else {
+    container.insertBefore(mainNode, comments[0] || null);
+  }
+
+  if (!isAtom) {
+    const description = firstDirectChild(container, "description");
+    if (description) {
+      description.textContent = summarizeHtml(feed.description) || feed.title;
+    }
+  }
+
+  return serializeFeedDocument(outputDoc, options.sourceXml || "");
+}
 function parseFeed(doc, rssUrl, sourceLabel) {
   const { isAtom, container } = feedDocumentParts(doc);
   const itemNodes = isAtom
@@ -507,36 +596,51 @@ function scopeLabel(scope) {
   return scope === "all" ? "主帖 + 评论" : "仅主帖";
 }
 
+function countUploadTokens(text) {
+  return (String(text || "").match(/upload:\/\//g) || []).length;
+}
+
 function applyScope(scope, options = {}) {
   if (!state.rawXml) throw new Error("还没有可处理的 RSS 内容");
 
   const effectiveScope = scope === "all" ? "all" : "main";
-  const scoped =
-    effectiveScope === "all"
-      ? { xml: state.rawXml, removed: 0 }
-      : stripCommentItems(state.rawXml);
+  const decoded = decodeUploadUrls(normalizeRssXmlText(state.rawXml));
+  const doc = parseXmlDocument(decoded.output);
+  const fullFeed = parseFeed(doc, state.rssUrl, state.sourceLabel);
+  const feed = {
+    ...fullFeed,
+    items: effectiveScope === "all" ? fullFeed.items : [],
+  };
 
-  const decoded = decodeUploadUrls(normalizeRssXmlText(scoped.xml));
-  const normalizedXml = normalizeRssXmlText(decoded.output);
-  const doc = parseXmlDocument(normalizedXml);
-  const feed = parseFeed(doc, state.rssUrl, state.sourceLabel);
-  const mappings = uniqueMappings(decoded.entries);
+  const outputXml = buildScopedFeedXml(doc, fullFeed, effectiveScope, {
+    sourceXml: state.rawXml,
+  });
+  const scopedEntries = decoded.entries.filter((entry) =>
+    outputXml.includes(entry.cdn),
+  );
+  const mappings = uniqueMappings(scopedEntries);
+  const stats = {
+    entries: scopedEntries,
+    replacements: scopedEntries.length,
+    unresolved: countUploadTokens(outputXml),
+  };
+
+  const keptComments = effectiveScope === "all" ? feed.items.length : 0;
+  const removedComments =
+    effectiveScope === "main" ? state.totalComments : 0;
   const markdown = buildMarkdown(feed, mappings, {
     scope: effectiveScope,
     totalComments: state.totalComments,
-    removedComments: effectiveScope === "main" ? scoped.removed : 0,
+    removedComments,
   });
 
   state.scope = effectiveScope;
   state.feed = feed;
-  state.decoded = decoded;
+  state.decoded = stats;
   state.mappings = mappings;
   state.markdown = markdown;
-  state.feedXml = normalizedXml;
+  state.feedXml = outputXml;
 
-  const keptComments = effectiveScope === "all" ? feed.items.length : 0;
-  const removedComments =
-    effectiveScope === "main" ? Math.max(state.totalComments, scoped.removed) : 0;
   const rangeText = scopeLabel(effectiveScope);
 
   elements.result.hidden = false;
@@ -545,28 +649,29 @@ function applyScope(scope, options = {}) {
     feed.sourceLabel,
     feed.rssUrl,
     rangeText,
+    `RSS item ${1 + keptComments} 个`,
     `保留评论 ${keptComments}/${state.totalComments}`,
     `生成于 ${feed.generatedAt}`,
   ]
     .filter(Boolean)
     .join(" · ");
-  elements.feedOutput.value = normalizedXml;
+  elements.feedOutput.value = outputXml;
   elements.markdownOutput.value = markdown;
   elements.imageTabCount.textContent = String(mappings.length);
   elements.feedOutputHint.textContent =
     effectiveScope === "main"
-      ? `保留主帖 description，已移除 ${removedComments} 条评论 item。`
-      : `保留主帖和 ${keptComments} 条评论 item。`;
+      ? `始终输出 1 个主帖 item；已移除 ${removedComments} 条评论 item。`
+      : `输出 1 个主帖 item + ${keptComments} 条评论 item。`;
   elements.markdownOutputHint.textContent =
     effectiveScope === "main"
       ? `仅导出主帖正文；RSS 中的 ${removedComments} 条评论已剥离。`
       : `导出主帖正文和 ${keptComments} 条评论。`;
   elements.scopeHint.textContent = state.totalComments
     ? `RSS 中含 ${state.totalComments} 条评论。默认仅主帖，切到右侧可一并保留。`
-    : "这个 RSS 没有评论 item，输出主帖内容。";
+    : "这个 RSS 没有评论 item，仍会输出 1 个主帖 item。";
   syncScopeRadios(effectiveScope);
 
-  renderMetrics(feed, decoded, mappings, effectiveScope, keptComments);
+  renderMetrics(feed, stats, mappings, effectiveScope, keptComments);
   renderImageGrid(mappings);
   renderPreview(feed, effectiveScope);
   if (options.activateFeedTab) activateTab("feed");
@@ -575,16 +680,15 @@ function applyScope(scope, options = {}) {
   return {
     scope: effectiveScope,
     sourceLabel: state.sourceLabel,
-    itemCount: feed.items.length,
+    itemCount: 1 + keptComments,
     keptComments,
     totalComments: state.totalComments,
     removedComments,
     mappingCount: mappings.length,
-    replacements: decoded.replacements,
-    unresolved: decoded.unresolved,
+    replacements: stats.replacements,
+    unresolved: stats.unresolved,
   };
 }
-
 function renderFeed(xmlText, options = {}) {
   if (!xmlText || typeof xmlText !== "string") {
     throw new Error("没有收到 RSS 内容");
@@ -1346,4 +1450,28 @@ elements.copyAllImagesButton.addEventListener("click", () =>
   ),
 );
 
+function topicFromQuery() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return (params.get("topic") || params.get("url") || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function submitUrlForm() {
+  if (typeof elements.urlForm.requestSubmit === "function") {
+    elements.urlForm.requestSubmit();
+    return;
+  }
+  elements.fetchButton.click();
+}
+
 updateRssPreview();
+
+const queryTopic = topicFromQuery();
+if (queryTopic && extractTopicId(queryTopic)) {
+  elements.topicUrl.value = queryTopic;
+  updateRssPreview();
+  window.setTimeout(submitUrlForm, 0);
+}

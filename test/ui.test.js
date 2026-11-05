@@ -54,10 +54,10 @@ function makeFeed() {
 
 let appLoadCount = 0;
 
-async function loadApp() {
+async function loadApp(options = {}) {
   const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
   const dom = new JSDOM(html, {
-    url: "http://127.0.0.1:8799/",
+    url: `http://127.0.0.1:8799/${options.search || ""}`,
     pretendToBeVisual: true,
   });
   dom.window.Element.prototype.scrollIntoView = () => {};
@@ -89,7 +89,7 @@ test("default output strips comment items and can include them on demand", async
   assert.match(feedXml, /主帖正文/);
   assert.equal(feedXml.split("<?xml").length - 1, 1);
   assert.ok(feedXml.includes(mainCdn));
-  assert.doesNotMatch(feedXml, /<item>/);
+  assert.equal((feedXml.match(/<item>/g) || []).length, 1);
   assert.doesNotMatch(feedXml, /应该被剥离/);
   assert.doesNotMatch(feedXml, /upload:\/\//);
   assert.ok(!feedXml.includes(commentCdn));
@@ -112,7 +112,7 @@ test("default output strips comment items and can include them on demand", async
   feedXml = document.getElementById("feedOutput").value;
   markdown = document.getElementById("markdownOutput").value;
 
-  assert.match(feedXml, /<item>/);
+  assert.equal((feedXml.match(/<item>/g) || []).length, 3);
   assert.match(feedXml, /应该被剥离的评论一/);
   assert.match(feedXml, /应该被剥离的评论二/);
   assert.ok(feedXml.includes(commentCdn));
@@ -126,6 +126,7 @@ test("default output strips comment items and can include them on demand", async
 
   const parsed = new dom.window.DOMParser().parseFromString(feedXml, "text/xml");
   assert.equal(parsed.getElementsByTagName("parsererror").length, 0);
+  assert.equal(parsed.getElementsByTagName("item").length, 3);
 });
 
 test("client displays the server's real fetch error and attempt details", async () => {
@@ -166,4 +167,37 @@ test("client displays the server's real fetch error and attempt details", async 
   assert.match(document.getElementById("errorDetails").textContent, /UPSTREAM_FETCH_FAILED/);
   assert.match(document.getElementById("errorDetails").textContent, /jina-reader/);
   assert.match(document.getElementById("errorDetails").textContent, /HTTP 429/);
+});
+
+test("a ?topic= URL prefills and auto-fetches the canonical numeric API", async () => {
+  const fixture = makeFeed();
+  let requestedUrl = "";
+  globalThis.fetch = async (url) => {
+    requestedUrl = String(url);
+    return new Response(fixture.xml, {
+      status: 200,
+      headers: {
+        "content-type": "application/rss+xml",
+        "x-fetch-source": "direct",
+      },
+    });
+  };
+
+  const dom = await loadApp({
+    search: "?topic=https%3A%2F%2Flinux.do%2Ft%2Ftopic%2F3109398",
+  });
+  const document = dom.window.document;
+
+  for (let i = 0; i < 40; i += 1) {
+    if (document.getElementById("result").hidden === false) break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  assert.equal(
+    document.getElementById("topicUrl").value,
+    "https://linux.do/t/topic/3109398",
+  );
+  assert.equal(requestedUrl, "/api/rss?topic=3109398&v=20261105-2");
+  assert.equal(document.getElementById("result").hidden, false);
+  assert.match(document.getElementById("feedOutput").value, /<item>/);
 });
