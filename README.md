@@ -6,9 +6,10 @@
 
 - 输入 `https://linux.do/t/topic/3109398`，自动拼出 `https://linux.do/t/topic/3109398.rss`
 - 通过同源 Worker API 拉取 RSS，避开浏览器 CORS 限制
-- Linux.do 直连被 Cloudflare 挑战拦截时，自动回退到 Jina Reader 获取原始 RSS 文本
+- Linux.do 直连被 Cloudflare 挑战拦截时，自动回退到 Jina Reader / Browser Rendering 获取原始 RSS
+- 支持 `?topic=<Linux.do 主题 URL>` 深链：浏览器扩展右键可带当前 topic 打开并自动解析
 - 解析 RSS 2.0 / Atom 基本结构，识别频道主帖与评论 item
-- **默认剥离评论 item，只复制/下载主帖内容**；也可随时切换为「主帖 + 评论」
+- **默认剥离评论 item，并始终生成一个主帖 `<item>`**，即使原 RSS 只有一个正文；也可随时切换为「主帖 + 评论」
 - 将 `upload://<Base62>.<ext>` 解码为：
   `https://cdn3.ldstatic.com/original/4X/<h0>/<h1>/<h2>/<sha1-hex>.<ext>`
 - 一键复制 / 下载替换后的 `feed.xml`
@@ -37,7 +38,7 @@ upload://1aBcDeFg.webp
 https://cdn3.ldstatic.com/original/4X/<h[0]>/<h[1]>/<h[2]>/<40-hex>.<ext>
 ```
 
-页面只替换 `upload://` token。Linux.do 的 RSS 把主帖正文放在 `channel > description`，把每条评论放在 `channel > item`；因此“仅主帖”模式会移除所有顶层 `item`，但保留主帖 description。
+页面只替换 `upload://` token。Linux.do 的 RSS 把主帖正文放在 `channel > description`，把每条评论放在 `channel > item`；“仅主帖”模式会移除评论 item，并把 `channel > description` 中的正文重新封装成一个标准主帖 `<item>`（title/link/guid/pubDate/description）。`channel > description` 会缩成摘要，避免正文重复。
 
 抓取顺序：先直接请求 Linux.do RSS；如果返回 Cloudflare 挑战或非 RSS，再通过 `r.jina.ai` 的纯文本模式获取同一份 RSS。前端会显示实际使用的数据源。
 
@@ -51,6 +52,12 @@ npm run dev
 ```
 
 打开终端里 Wrangler 输出的地址（通常是 `http://localhost:8787`）。
+
+也支持直接带 topic 打开并自动拉取：
+
+```text
+http://localhost:8787/?topic=https%3A%2F%2Flinux.do%2Ft%2Ftopic%2F3109398
+```
 
 运行测试和 Worker 打包检查：
 
@@ -106,7 +113,7 @@ wrangler.jsonc     Workers 静态资源与入口配置
 ## 已知限制
 
 - Linux.do 对普通 Worker 出口启用 Cloudflare 挑战时，直连会返回 HTTP 403。项目会自动使用 Jina Reader 备用抓取；如果备用服务也不可用，页面会显示真实错误、每次请求状态和响应片段，并保留「粘贴 RSS 原文」模式。
-- “仅主帖”通过移除 RSS 顶层 `<item>` / Atom `<entry>` 实现；如果未来 Linux.do 改变 RSS 结构，需要同步调整 `public/app.js` 中的 `stripCommentItems()`。
+- “仅主帖”通过移除评论 item 并重建一个主帖 item 实现；如果未来 Linux.do 改变 RSS 结构，需要同步调整 `public/app.js` 中的 `buildScopedFeedXml()`。
 - CDN 路径按 Linux.do 当前使用的 `cdn3.ldstatic.com/original/4X` 规则生成；如果站点以后更换 CDN 布局，需要调整 `public/core.js` 中的 `CDN_BASE_PATH`。
 - 预览会移除脚本、内联事件、内联样式和危险 URL；下载的 `feed.xml` 保留原始 XML，仅做短链替换。
 
